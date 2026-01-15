@@ -1,0 +1,5 @@
+{
+  "name": "GitHub Issue Insight Agent",
+  "description": "An intelligent agent that analyzes GitHub repository issues to extract feature requirements and design decisions using Gemini AI.",
+  "requestFramePermissions": []
+}
