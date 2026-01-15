@@ -85,26 +85,44 @@ const App: React.FC = () => {
     let totalComments = 0;
 
     try {
-      for (let i = 0; i < issues.length; i++) {
-        setAnalysisProgress({ current: i + 1, total: issues.length });
-        const issue = issues[i];
+      // Pre-calculate total comments for stats
+      issues.forEach(issue => {
         totalComments += (issue.comments_data?.length || 0);
+      });
 
-        let partial;
-        if (selectedModel === ModelType.GEMINI) {
-          partial = await analyzeSingleIssueWithGemini(issue);
-        } else {
-          partial = await analyzeSingleIssueWithGLM(issue, glmKey);
-        }
+      // Implement concurrency pool (Limit to 10 as requested)
+      const CONCURRENCY_LIMIT = 10;
+      let finishedCount = 0;
+      const iterator = issues.entries();
 
-        if (partial.features) aggregatedFeatures.push(...partial.features);
-        if (partial.decisions) aggregatedDecisions.push(...partial.decisions);
-        
-        // Brief delay to prevent hitting API rate limits if no token/low tier
-        if (i < issues.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300));
+      const worker = async () => {
+        for (const [_, issue] of iterator) {
+          try {
+            let partial;
+            if (selectedModel === ModelType.GEMINI) {
+              partial = await analyzeSingleIssueWithGemini(issue);
+            } else {
+              partial = await analyzeSingleIssueWithGLM(issue, glmKey);
+            }
+
+            if (partial.features) aggregatedFeatures.push(...partial.features);
+            if (partial.decisions) aggregatedDecisions.push(...partial.decisions);
+          } catch (issueErr) {
+            console.error(`Error analyzing issue #${issue.number}:`, issueErr);
+          } finally {
+            finishedCount++;
+            setAnalysisProgress({ current: finishedCount, total: issues.length });
+          }
         }
-      }
+      };
+
+      // Create workers to share the iterator
+      const workers = Array.from(
+        { length: Math.min(CONCURRENCY_LIMIT, issues.length) }, 
+        () => worker()
+      );
+      
+      await Promise.all(workers);
       
       setResult({
         features: aggregatedFeatures,
@@ -271,7 +289,7 @@ const App: React.FC = () => {
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-1">分析本地 Issue 导出目录</h3>
                 <p className="text-slate-500 text-sm mb-6 max-w-sm mx-auto">
-                  选择文件夹（包含 Markdown/TXT 文件），智能体将逐一分析每一个 Issue。
+                  选择文件夹（包含 Markdown/TXT 文件），智能体将以 10 路并发模式处理每一条记录。
                 </p>
                 <input 
                   type="file" 
@@ -324,8 +342,8 @@ const App: React.FC = () => {
             {status === AnalysisState.ANALYZING && (
               <div className="mt-6 w-full max-w-md">
                 <div className="flex justify-between text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">
-                  <span>正在处理第 {analysisProgress.current} 个 Issue</span>
-                  <span>共 {analysisProgress.total} 个</span>
+                  <span>并发处理中: {analysisProgress.current} / {analysisProgress.total}</span>
+                  <span className="text-indigo-600 font-extrabold animate-pulse">10路加速</span>
                 </div>
                 <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden shadow-inner">
                   <div 
@@ -334,7 +352,7 @@ const App: React.FC = () => {
                   />
                 </div>
                 <p className="text-slate-400 mt-4 text-center text-sm italic">
-                  正在逐条解析 Issue 及其上下文，确保不遗漏任何细节。
+                  正在并行分析 Issue 及其上下文，确保高效完成任务。
                 </p>
               </div>
             )}
@@ -353,7 +371,7 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 leading-tight">功能特性汇总</h3>
-                    <p className="text-xs text-slate-400 font-medium">从逐条 Issue 中提取的需求点</p>
+                    <p className="text-xs text-slate-400 font-medium">从并发分析中提取的需求点</p>
                   </div>
                 </div>
                 <div className="flex-1">
@@ -384,8 +402,8 @@ const App: React.FC = () => {
             {[
               { 
                 icon: <BrainCircuit className="text-indigo-500" />, 
-                title: "逐条深度分析", 
-                desc: "智能体不再批量堆叠数据，而是逐一深入解析每个 Issue，获取更高精度的洞察。" 
+                title: "10路并发提速", 
+                desc: "智能体启用并行处理机制，支持 10 路并发与大模型交互，大幅缩短大规模分析所需的总耗时。" 
               },
               { 
                 icon: <Globe className="text-blue-500" />, 
@@ -417,7 +435,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-6 text-xs font-bold uppercase tracking-widest text-slate-400">
             <span>Powered by Gemini 3 / GLM-4</span>
             <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-            <span>Iterative Analysis Mode</span>
+            <span>Parallel Analysis (10x Mode)</span>
           </div>
         </div>
       </footer>
