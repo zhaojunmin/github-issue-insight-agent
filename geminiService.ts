@@ -1,42 +1,40 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { GithubIssue, AnalysisResult } from "./types";
+import { GithubIssue, FeatureRequirement, DesignDecision } from "./types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-export const analyzeIssuesWithGemini = async (issues: GithubIssue[]): Promise<AnalysisResult> => {
-  // Extract critical info: Title, Body, and top 8 most relevant comments per issue
-  // We use slightly more comments here for better context on design decisions
-  const issueData = issues.map(i => ({
-    n: i.number,
-    t: i.title,
-    b: (i.body || '').substring(0, 500),
-    s: i.state,
-    c: (i.comments_data || []).slice(0, 8).map(comment => ({
+export const analyzeSingleIssueWithGemini = async (issue: GithubIssue): Promise<{ features: FeatureRequirement[], decisions: DesignDecision[] }> => {
+  const issueData = {
+    n: issue.number,
+    t: issue.title,
+    b: (issue.body || '').substring(0, 1000),
+    s: issue.state,
+    c: (issue.comments_data || []).slice(0, 15).map(comment => ({
       u: comment.user.login,
-      b: comment.body.substring(0, 300)
+      b: comment.body.substring(0, 500)
     }))
-  }));
+  };
 
   const prompt = `
-    你是一个高级软件架构师和产品经理。请分析以下 GitHub Issues 及其评论内容。
+    你是一个高级软件架构师和产品经理。请分析以下这一条 GitHub Issue 及其评论内容。
     
     任务目标：
-    1. **功能特性需求 (Feature Requirements)**：识别用户提出的新功能建议或改进。从 Issue 描述及其后续评论的讨论中总结出这些需求。
-    2. **设计决策 (Design Decisions)**：识别深度的技术设计讨论。寻找开发者之间关于架构、实现方案的辩论，并提取出最终达成的共识或做出的决策。
+    1. **功能特性需求 (Feature Requirements)**：识别该 Issue 提出的功能建议或改进。
+    2. **设计决策 (Design Decisions)**：识别该 Issue 中的技术设计讨论，提取最终达成的共识。
 
     输入数据 (n=编号, t=标题, b=描述, s=状态, c=评论列表):
     ${JSON.stringify(issueData)}
 
-    JSON 输出要求（请使用中文回答内容）：
-    - features: 包含 title (标题), summary (功能汇总描述), priority (优先级: High/Medium/Low), sourceIssueNumbers (来源编号数组)。
-    - decisions: 包含 topic (讨论主题), discussion (核心争议或讨论点摘要), decision (最终决策内容), sourceIssueNumbers (来源编号数组)。
+    JSON 输出要求（必须返回合法的 JSON 对象，内容使用中文）：
+    - features: 包含 title (标题), summary (简短总结), priority (优先级: High/Medium/Low), sourceIssueNumbers (固定为 [${issue.number}])。
+    - decisions: 包含 topic (讨论主题), discussion (核心争议或讨论点摘要), decision (最终决策内容), sourceIssueNumbers (固定为 [${issue.number}])。
     
-    请确保总结具有前瞻性和准确性。如果某个 Issue 没有达成决策，请在 decision 中说明“讨论中”。
+    如果没有发现明确的功能或决策，请返回空数组。
   `;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3-pro-preview',
+    model: 'gemini-3-flash-preview',
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -75,16 +73,10 @@ export const analyzeIssuesWithGemini = async (issues: GithubIssue[]): Promise<An
     }
   });
 
-  const result = JSON.parse(response.text);
-  const totalComments = issues.reduce((acc, curr) => acc + (curr.comments_data?.length || 0), 0);
-
-  return {
-    ...result,
-    stats: {
-      totalIssuesAnalyzed: issues.length,
-      featureCount: result.features.length,
-      decisionCount: result.decisions.length,
-      totalCommentsAnalyzed: totalComments
-    }
-  };
+  try {
+    return JSON.parse(response.text);
+  } catch (e) {
+    console.error("Parse error for issue", issue.number, e);
+    return { features: [], decisions: [] };
+  }
 };

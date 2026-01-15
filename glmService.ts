@@ -1,26 +1,26 @@
 
-import { GithubIssue, AnalysisResult } from "./types";
+import { GithubIssue, FeatureRequirement, DesignDecision } from "./types";
 
-export const analyzeIssuesWithGLM = async (issues: GithubIssue[], apiKey: string): Promise<AnalysisResult> => {
+export const analyzeSingleIssueWithGLM = async (issue: GithubIssue, apiKey: string): Promise<{ features: FeatureRequirement[], decisions: DesignDecision[] }> => {
   if (!apiKey) throw new Error("请先在设置中配置 GLM API Key");
 
-  const issueData = issues.map(i => ({
-    n: i.number,
-    t: i.title,
-    b: (i.body || '').substring(0, 500),
-    s: i.state,
-    c: (i.comments_data || []).slice(0, 8).map(comment => ({
+  const issueData = {
+    n: issue.number,
+    t: issue.title,
+    b: (issue.body || '').substring(0, 1000),
+    s: issue.state,
+    c: (issue.comments_data || []).slice(0, 15).map(comment => ({
       u: comment.user.login,
-      b: comment.body.substring(0, 300)
+      b: comment.body.substring(0, 500)
     }))
-  }));
+  };
 
   const prompt = `
-    你是一个高级软件架构师和产品经理。请分析以下 GitHub Issues 及其评论内容。
+    你是一个高级软件架构师和产品经理。请分析以下这一条 GitHub Issue 及其评论内容。
     
     任务目标：
-    1. **功能特性需求 (Feature Requirements)**：识别用户提出的新功能建议或改进。
-    2. **关键设计决策 (Design Decisions)**：识别深度的技术设计讨论，提取最终达成的共识。
+    1. **功能特性需求**：识别提出的功能建议或改进。
+    2. **关键设计决策**：识别技术设计讨论并提取共识。
 
     输入数据:
     ${JSON.stringify(issueData)}
@@ -28,12 +28,13 @@ export const analyzeIssuesWithGLM = async (issues: GithubIssue[], apiKey: string
     JSON 输出要求（必须返回合法的 JSON 对象，内容使用中文）：
     {
       "features": [
-        { "title": "标题", "summary": "汇总描述", "priority": "High/Medium/Low", "sourceIssueNumbers": [1, 2] }
+        { "title": "标题", "summary": "汇总描述", "priority": "High/Medium/Low", "sourceIssueNumbers": [${issue.number}] }
       ],
       "decisions": [
-        { "topic": "讨论主题", "discussion": "核心争议点摘要", "decision": "最终决策内容", "sourceIssueNumbers": [3] }
+        { "topic": "讨论主题", "discussion": "核心争议点摘要", "decision": "最终决策内容", "sourceIssueNumbers": [${issue.number}] }
       ]
     }
+    如果没有发现，请返回空数组。
   `;
 
   const response = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
@@ -59,17 +60,5 @@ export const analyzeIssuesWithGLM = async (issues: GithubIssue[], apiKey: string
 
   const data = await response.json();
   const content = data.choices[0].message.content;
-  const result = JSON.parse(content);
-
-  const totalComments = issues.reduce((acc, curr) => acc + (curr.comments_data?.length || 0), 0);
-
-  return {
-    ...result,
-    stats: {
-      totalIssuesAnalyzed: issues.length,
-      featureCount: result.features.length,
-      decisionCount: result.decisions.length,
-      totalCommentsAnalyzed: totalComments
-    }
-  };
+  return JSON.parse(content);
 };

@@ -3,9 +3,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Search, Github, LayoutDashboard, Lightbulb, Gavel, AlertCircle, Loader2, History, ShieldCheck, Settings, BrainCircuit, FolderOpen, Globe } from 'lucide-react';
 import { fetchRepoIssues } from './githubService';
 import { parseLocalIssueFiles } from './localFileService';
-import { analyzeIssuesWithGemini } from './geminiService';
-import { analyzeIssuesWithGLM } from './glmService';
-import { AnalysisState, AnalysisResult, GithubIssue, ModelType } from './types';
+import { analyzeSingleIssueWithGemini } from './geminiService';
+import { analyzeSingleIssueWithGLM } from './glmService';
+import { AnalysisState, AnalysisResult, GithubIssue, ModelType, FeatureRequirement, DesignDecision } from './types';
 import FeatureList from './components/FeatureList';
 import DecisionList from './components/DecisionList';
 import SummaryStats from './components/SummaryStats';
@@ -21,6 +21,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [allIssues, setAllIssues] = useState<GithubIssue[]>([]);
+  const [analysisProgress, setAnalysisProgress] = useState({ current: 0, total: 0 });
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -77,19 +78,47 @@ const App: React.FC = () => {
   const startAnalysis = async (issues: GithubIssue[]) => {
     setAllIssues(issues);
     setStatus(AnalysisState.ANALYZING);
+    setAnalysisProgress({ current: 0, total: issues.length });
     
-    let analysis: AnalysisResult;
+    const aggregatedFeatures: FeatureRequirement[] = [];
+    const aggregatedDecisions: DesignDecision[] = [];
+    let totalComments = 0;
+
     try {
-      if (selectedModel === ModelType.GEMINI) {
-        analysis = await analyzeIssuesWithGemini(issues);
-      } else {
-        analysis = await analyzeIssuesWithGLM(issues, glmKey);
+      for (let i = 0; i < issues.length; i++) {
+        setAnalysisProgress({ current: i + 1, total: issues.length });
+        const issue = issues[i];
+        totalComments += (issue.comments_data?.length || 0);
+
+        let partial;
+        if (selectedModel === ModelType.GEMINI) {
+          partial = await analyzeSingleIssueWithGemini(issue);
+        } else {
+          partial = await analyzeSingleIssueWithGLM(issue, glmKey);
+        }
+
+        if (partial.features) aggregatedFeatures.push(...partial.features);
+        if (partial.decisions) aggregatedDecisions.push(...partial.decisions);
+        
+        // Brief delay to prevent hitting API rate limits if no token/low tier
+        if (i < issues.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 300));
+        }
       }
       
-      setResult(analysis);
+      setResult({
+        features: aggregatedFeatures,
+        decisions: aggregatedDecisions,
+        stats: {
+          totalIssuesAnalyzed: issues.length,
+          featureCount: aggregatedFeatures.length,
+          decisionCount: aggregatedDecisions.length,
+          totalCommentsAnalyzed: totalComments
+        }
+      });
       setStatus(AnalysisState.COMPLETED);
     } catch (err: any) {
-      setError(err.message || '大模型分析失败。');
+      setError(err.message || '大模型逐条分析失败。');
       setStatus(AnalysisState.ERROR);
     }
   };
@@ -154,7 +183,7 @@ const App: React.FC = () => {
                     onChange={(e) => setGhToken(e.target.value)}
                     className="w-full px-4 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-sm shadow-inner"
                   />
-                  <p className="text-[10px] text-slate-400">用于访问在线 GitHub 仓库，提高 API 频率限制。</p>
+                  <p className="text-[10px] text-slate-400">用于在线抓取，提高 API 频率限制。</p>
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-2">
@@ -242,14 +271,14 @@ const App: React.FC = () => {
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-1">分析本地 Issue 导出目录</h3>
                 <p className="text-slate-500 text-sm mb-6 max-w-sm mx-auto">
-                  选择包含以 <code># Issue #...</code> 开头的 Markdown 或 TXT 文件的文件夹。
+                  选择文件夹（包含 Markdown/TXT 文件），智能体将逐一分析每一个 Issue。
                 </p>
                 <input 
                   type="file" 
                   ref={fileInputRef}
                   style={{ display: 'none' }}
                   onChange={handleLocalAnalyze}
-                  // @ts-ignore - webkitdirectory is standard but not in TS types
+                  // @ts-ignore
                   webkitdirectory="" 
                   directory="" 
                 />
@@ -282,19 +311,33 @@ const App: React.FC = () => {
         {(status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING) && (
           <div className="flex flex-col items-center justify-center py-20 animate-in fade-in">
             <div className="relative mb-6">
-               <div className="w-20 h-20 bg-indigo-100 rounded-3xl flex items-center justify-center text-indigo-600 animate-pulse">
-                <BrainCircuit size={40} className="animate-bounce" />
+               <div className="w-24 h-24 bg-indigo-100 rounded-3xl flex items-center justify-center text-indigo-600 animate-pulse">
+                <BrainCircuit size={48} className="animate-bounce" />
               </div>
-              <div className="absolute -bottom-1 -right-1 bg-white p-1 rounded-full shadow-sm">
-                 <Loader2 className="animate-spin text-indigo-600" size={20} />
+              <div className="absolute -bottom-2 -right-2 bg-white p-2 rounded-full shadow-lg">
+                 <Loader2 className="animate-spin text-indigo-600" size={24} />
               </div>
             </div>
             <h3 className="text-xl font-bold text-slate-800">
               {status === AnalysisState.FETCHING ? '正在读取讨论数据...' : `正在通过 ${selectedModel === ModelType.GEMINI ? 'Gemini' : 'GLM'} 进行深度洞察...`}
             </h3>
-            <p className="text-slate-500 mt-2 text-center max-w-sm">
-              AI 正在分析讨论中的功能点、共识和架构决策，请稍等片刻。
-            </p>
+            {status === AnalysisState.ANALYZING && (
+              <div className="mt-6 w-full max-w-md">
+                <div className="flex justify-between text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">
+                  <span>正在处理第 {analysisProgress.current} 个 Issue</span>
+                  <span>共 {analysisProgress.total} 个</span>
+                </div>
+                <div className="w-full bg-slate-200 h-3 rounded-full overflow-hidden shadow-inner">
+                  <div 
+                    className="bg-gradient-to-r from-indigo-500 to-violet-500 h-full transition-all duration-500 ease-out"
+                    style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-slate-400 mt-4 text-center text-sm italic">
+                  正在逐条解析 Issue 及其上下文，确保不遗漏任何细节。
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -310,7 +353,7 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 leading-tight">功能特性汇总</h3>
-                    <p className="text-xs text-slate-400 font-medium">从讨论中提取的需求点</p>
+                    <p className="text-xs text-slate-400 font-medium">从逐条 Issue 中提取的需求点</p>
                   </div>
                 </div>
                 <div className="flex-1">
@@ -325,7 +368,7 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 leading-tight">关键设计决策</h3>
-                    <p className="text-xs text-slate-400 font-medium">在 Issue 中达成的技术共识</p>
+                    <p className="text-xs text-slate-400 font-medium">在 Issue 中发现的技术路线共识</p>
                   </div>
                 </div>
                 <div className="flex-1">
@@ -340,19 +383,19 @@ const App: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 opacity-80 group/intro">
             {[
               { 
+                icon: <BrainCircuit className="text-indigo-500" />, 
+                title: "逐条深度分析", 
+                desc: "智能体不再批量堆叠数据，而是逐一深入解析每个 Issue，获取更高精度的洞察。" 
+              },
+              { 
                 icon: <Globe className="text-blue-500" />, 
-                title: "在线同步分析", 
-                desc: "输入 GitHub 仓库名，智能体自动获取 Issue 并追踪其深层讨论逻辑。" 
+                title: "实时进度追踪", 
+                desc: "可视化分析进度，您可以清晰看到大模型处理到了哪一条讨论，不错过任何进度。" 
               },
               { 
                 icon: <FolderOpen className="text-amber-500" />, 
-                title: "本地离线处理", 
-                desc: "支持分析已导出的 Issue 文件目录，保护隐私同时满足离线洞察需求。" 
-              },
-              { 
-                icon: <BrainCircuit className="text-indigo-500" />, 
-                title: "多模型多模式", 
-                desc: "灵活切换 Gemini 或 GLM 模型，适配不同的中文/英文讨论语境。" 
+                title: "灵活数据来源", 
+                desc: "无论是通过 GitHub 实时同步还是加载本地 Markdown 导出，都能获得一致的分析体验。" 
               }
             ].map((item, i) => (
               <div key={i} className="p-8 bg-white border border-slate-200 rounded-3xl transition-all duration-300 hover:shadow-xl hover:-translate-y-1">
@@ -374,7 +417,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-6 text-xs font-bold uppercase tracking-widest text-slate-400">
             <span>Powered by Gemini 3 / GLM-4</span>
             <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-            <span>React + Octokit</span>
+            <span>Iterative Analysis Mode</span>
           </div>
         </div>
       </footer>
