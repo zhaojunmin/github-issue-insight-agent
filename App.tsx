@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Github, LayoutDashboard, Lightbulb, Gavel, AlertCircle, Loader2, History, ShieldCheck, Settings, BrainCircuit, FolderOpen, Globe } from 'lucide-react';
+import { Search, Github, LayoutDashboard, Lightbulb, Gavel, AlertCircle, Loader2, History, ShieldCheck, Settings, BrainCircuit, FolderOpen, Globe, Download, FileText, Sparkles } from 'lucide-react';
 import { fetchRepoIssues } from './githubService';
 import { parseLocalIssueFiles } from './localFileService';
 import { analyzeSingleIssueWithGemini } from './geminiService';
 import { analyzeSingleIssueWithGLM } from './glmService';
+import { mergeInsights } from './mergingService';
 import { AnalysisState, AnalysisResult, GithubIssue, ModelType, FeatureRequirement, DesignDecision } from './types';
 import FeatureList from './components/FeatureList';
 import DecisionList from './components/DecisionList';
@@ -80,17 +81,15 @@ const App: React.FC = () => {
     setStatus(AnalysisState.ANALYZING);
     setAnalysisProgress({ current: 0, total: issues.length });
     
-    const aggregatedFeatures: FeatureRequirement[] = [];
-    const aggregatedDecisions: DesignDecision[] = [];
+    const rawFeatures: FeatureRequirement[] = [];
+    const rawDecisions: DesignDecision[] = [];
     let totalComments = 0;
 
     try {
-      // Pre-calculate total comments for stats
       issues.forEach(issue => {
         totalComments += (issue.comments_data?.length || 0);
       });
 
-      // Implement concurrency pool (Limit to 10 as requested)
       const CONCURRENCY_LIMIT = 10;
       let finishedCount = 0;
       const iterator = issues.entries();
@@ -105,8 +104,8 @@ const App: React.FC = () => {
               partial = await analyzeSingleIssueWithGLM(issue, glmKey);
             }
 
-            if (partial.features) aggregatedFeatures.push(...partial.features);
-            if (partial.decisions) aggregatedDecisions.push(...partial.decisions);
+            if (partial.features) rawFeatures.push(...partial.features);
+            if (partial.decisions) rawDecisions.push(...partial.decisions);
           } catch (issueErr) {
             console.error(`Error analyzing issue #${issue.number}:`, issueErr);
           } finally {
@@ -116,29 +115,90 @@ const App: React.FC = () => {
         }
       };
 
-      // Create workers to share the iterator
       const workers = Array.from(
         { length: Math.min(CONCURRENCY_LIMIT, issues.length) }, 
         () => worker()
       );
       
       await Promise.all(workers);
+
+      // --- New Merging Phase ---
+      setStatus(AnalysisState.MERGING);
+      const { features: mergedFeatures, decisions: mergedDecisions } = await mergeInsights(
+        rawFeatures, 
+        rawDecisions, 
+        selectedModel, 
+        glmKey
+      );
       
       setResult({
-        features: aggregatedFeatures,
-        decisions: aggregatedDecisions,
+        features: mergedFeatures,
+        decisions: mergedDecisions,
         stats: {
           totalIssuesAnalyzed: issues.length,
-          featureCount: aggregatedFeatures.length,
-          decisionCount: aggregatedDecisions.length,
+          featureCount: mergedFeatures.length,
+          decisionCount: mergedDecisions.length,
           totalCommentsAnalyzed: totalComments
         }
       });
       setStatus(AnalysisState.COMPLETED);
     } catch (err: any) {
-      setError(err.message || '大模型逐条分析失败。');
+      setError(err.message || '分析或合并阶段失败。');
       setStatus(AnalysisState.ERROR);
     }
+  };
+
+  const exportReport = () => {
+    if (!result) return;
+
+    const timestamp = new Date().toLocaleString();
+    const sourceLabel = mode === 'online' ? `GitHub Repository: ${repoPath}` : 'Local Issue Files';
+    
+    let md = `# IssueMind 智能分析报告\n\n`;
+    md += `> **分析时间**: ${timestamp}\n`;
+    md += `> **数据来源**: ${sourceLabel}\n`;
+    md += `> **分析模型**: ${selectedModel === ModelType.GEMINI ? 'Gemini 3 Flash' : 'GLM-4 Flash'}\n\n`;
+    
+    md += `## 1. 分析概览\n\n`;
+    md += `- **分析 Issue 总数**: ${result.stats.totalIssuesAnalyzed}\n`;
+    md += `- **提取功能特性 (合并后)**: ${result.stats.featureCount}\n`;
+    md += `- **识别设计决策 (合并后)**: ${result.stats.decisionCount}\n`;
+    md += `- **累计处理评论**: ${result.stats.totalCommentsAnalyzed}\n\n`;
+
+    md += `## 2. 功能特性需求汇总\n\n`;
+    if (result.features.length === 0) {
+      md += `*未提取到明确的功能需求。*\n\n`;
+    } else {
+      result.features.forEach((f, i) => {
+        md += `### [${f.priority}] ${f.title}\n`;
+        md += `**摘要**: ${f.summary}\n`;
+        md += `**来源 Issue**: ${f.sourceIssueNumbers.map(n => `#${n}`).join(', ')}\n\n`;
+      });
+    }
+
+    md += `## 3. 关键设计决策\n\n`;
+    if (result.decisions.length === 0) {
+      md += `*未提取到明确的设计决策。*\n\n`;
+    } else {
+      result.decisions.forEach((d, i) => {
+        md += `### ${d.topic}\n`;
+        md += `**讨论背景**: ${d.discussion}\n`;
+        md += `**最终决策**: ${d.decision}\n`;
+        md += `**追踪来源**: ${d.sourceIssueNumbers.map(n => `#${n}`).join(', ')}\n\n`;
+      });
+    }
+
+    md += `\n---\n*由 IssueMind 智能体自动生成 (已完成语义合并)*`;
+
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `IssueMind_Report_${repoPath.replace(/[/\\?%*:|"<>]/g, '-') || 'Local'}_${new Date().getTime()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -266,15 +326,15 @@ const App: React.FC = () => {
                     placeholder="代码库路径 (例如 google/perfetto)"
                     value={repoPath}
                     onChange={(e) => setRepoPath(e.target.value)}
-                    disabled={status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING}
+                    disabled={status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING || status === AnalysisState.MERGING}
                     className="w-full pl-12 pr-40 py-4 bg-white border-2 border-slate-200 rounded-2xl focus:border-indigo-500 focus:outline-none transition-all shadow-sm hover:border-slate-300"
                   />
                   <button
                     type="submit"
-                    disabled={status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING}
+                    disabled={status !== AnalysisState.IDLE && status !== AnalysisState.COMPLETED && status !== AnalysisState.ERROR}
                     className="absolute right-2 px-6 py-2.5 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all shadow-md shadow-indigo-100"
                   >
-                    {status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING ? (
+                    {status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING || status === AnalysisState.MERGING ? (
                       <Loader2 className="animate-spin" size={20} />
                     ) : (
                       '开始分析'
@@ -289,7 +349,7 @@ const App: React.FC = () => {
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 mb-1">分析本地 Issue 导出目录</h3>
                 <p className="text-slate-500 text-sm mb-6 max-w-sm mx-auto">
-                  选择文件夹（包含 Markdown/TXT 文件），智能体将以 10 路并发模式处理每一条记录。
+                  选择文件夹，智能体将先并发解析 Issue，然后进行语义聚合。
                 </p>
                 <input 
                   type="file" 
@@ -302,10 +362,10 @@ const App: React.FC = () => {
                 />
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING}
+                  disabled={status !== AnalysisState.IDLE && status !== AnalysisState.COMPLETED && status !== AnalysisState.ERROR}
                   className="px-8 py-3 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 disabled:bg-slate-300 transition-all shadow-lg shadow-indigo-100 flex items-center gap-2 mx-auto"
                 >
-                  {status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING ? (
+                  {status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING || status === AnalysisState.MERGING ? (
                     <Loader2 className="animate-spin" size={20} />
                   ) : (
                     <>
@@ -326,18 +386,20 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {(status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING) && (
+        {(status === AnalysisState.FETCHING || status === AnalysisState.ANALYZING || status === AnalysisState.MERGING) && (
           <div className="flex flex-col items-center justify-center py-20 animate-in fade-in">
             <div className="relative mb-6">
                <div className="w-24 h-24 bg-indigo-100 rounded-3xl flex items-center justify-center text-indigo-600 animate-pulse">
-                <BrainCircuit size={48} className="animate-bounce" />
+                {status === AnalysisState.MERGING ? <Sparkles size={48} className="text-violet-600 animate-spin-slow" /> : <BrainCircuit size={48} className="animate-bounce" />}
               </div>
               <div className="absolute -bottom-2 -right-2 bg-white p-2 rounded-full shadow-lg">
                  <Loader2 className="animate-spin text-indigo-600" size={24} />
               </div>
             </div>
             <h3 className="text-xl font-bold text-slate-800">
-              {status === AnalysisState.FETCHING ? '正在读取讨论数据...' : `正在通过 ${selectedModel === ModelType.GEMINI ? 'Gemini' : 'GLM'} 进行深度洞察...`}
+              {status === AnalysisState.FETCHING ? '正在读取讨论数据...' : 
+               status === AnalysisState.MERGING ? '正在进行语义深度聚合...' :
+               `正在通过 ${selectedModel === ModelType.GEMINI ? 'Gemini' : 'GLM'} 进行逐条洞察...`}
             </h3>
             {status === AnalysisState.ANALYZING && (
               <div className="mt-6 w-full max-w-md">
@@ -351,16 +413,29 @@ const App: React.FC = () => {
                     style={{ width: `${(analysisProgress.current / analysisProgress.total) * 100}%` }}
                   />
                 </div>
-                <p className="text-slate-400 mt-4 text-center text-sm italic">
-                  正在并行分析 Issue 及其上下文，确保高效完成任务。
-                </p>
               </div>
+            )}
+            {status === AnalysisState.MERGING && (
+               <p className="text-slate-400 mt-4 text-center text-sm italic max-w-xs">
+                正在识别重复项并合并相似的特性与决策，为您提供更精简、更高质量的洞察报告。
+              </p>
             )}
           </div>
         )}
 
         {result && status === AnalysisState.COMPLETED && (
           <div className="space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-bold text-slate-800">深度分析汇总 (语义合并后)</h3>
+              <button 
+                onClick={exportReport}
+                className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold transition-all shadow-md shadow-emerald-100"
+              >
+                <Download size={16} />
+                导出报告
+              </button>
+            </div>
+            
             <SummaryStats stats={result.stats} />
             
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -371,7 +446,7 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 leading-tight">功能特性汇总</h3>
-                    <p className="text-xs text-slate-400 font-medium">从并发分析中提取的需求点</p>
+                    <p className="text-xs text-slate-400 font-medium">合并了相似需求的精简列表</p>
                   </div>
                 </div>
                 <div className="flex-1">
@@ -386,7 +461,7 @@ const App: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-xl font-bold text-slate-800 leading-tight">关键设计决策</h3>
-                    <p className="text-xs text-slate-400 font-medium">在 Issue 中发现的技术路线共识</p>
+                    <p className="text-xs text-slate-400 font-medium">技术选型与架构共识的汇总</p>
                   </div>
                 </div>
                 <div className="flex-1">
@@ -402,18 +477,18 @@ const App: React.FC = () => {
             {[
               { 
                 icon: <BrainCircuit className="text-indigo-500" />, 
-                title: "10路并发提速", 
-                desc: "智能体启用并行处理机制，支持 10 路并发与大模型交互，大幅缩短大规模分析所需的总耗时。" 
+                title: "10路并发 + 语义合并", 
+                desc: "智能体在完成 10 路并发解析后，会启动自动语义聚合阶段，消除重复项并合并相似的洞察。" 
               },
               { 
-                icon: <Globe className="text-blue-500" />, 
-                title: "实时进度追踪", 
-                desc: "可视化分析进度，您可以清晰看到大模型处理到了哪一条讨论，不错过任何进度。" 
+                icon: <FileText className="text-emerald-500" />, 
+                title: "自动导出报告", 
+                desc: "一键导出 Markdown 格式的深度分析报告，涵盖功能点汇总与架构决策，方便团队分享与归档。" 
               },
               { 
-                icon: <FolderOpen className="text-amber-500" />, 
-                title: "灵活数据来源", 
-                desc: "无论是通过 GitHub 实时同步还是加载本地 Markdown 导出，都能获得一致的分析体验。" 
+                icon: <Sparkles className="text-violet-500" />, 
+                title: "高质量决策提取", 
+                desc: "不仅提取表层信息，更能深入讨论区捕捉技术共识与选型权衡，辅助架构复盘。" 
               }
             ].map((item, i) => (
               <div key={i} className="p-8 bg-white border border-slate-200 rounded-3xl transition-all duration-300 hover:shadow-xl hover:-translate-y-1">
@@ -435,7 +510,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-6 text-xs font-bold uppercase tracking-widest text-slate-400">
             <span>Powered by Gemini 3 / GLM-4</span>
             <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-            <span>Parallel Analysis (10x Mode)</span>
+            <span>Iterative + Semantic Merging Mode</span>
           </div>
         </div>
       </footer>
