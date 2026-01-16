@@ -9,8 +9,8 @@ interface DecisionListProps {
   issues?: GithubIssue[];
 }
 
-const DecisionList: React.FC<DecisionListProps> = ({ decisions, repoPath, issues = [] }) => {
-  if (decisions.length === 0) {
+const DecisionList: React.FC<DecisionListProps> = ({ decisions = [], repoPath, issues = [] }) => {
+  if (!decisions || decisions.length === 0) {
     return <p className="text-slate-400 text-center py-10 italic">No significant design decisions identified.</p>;
   }
 
@@ -39,7 +39,7 @@ const DecisionList: React.FC<DecisionListProps> = ({ decisions, repoPath, issues
 
           <div className="flex flex-wrap gap-2 items-center">
              <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Traceability:</span>
-            {decision.sourceIssueNumbers.map(num => {
+            {(decision.sourceIssueNumbers || []).map(num => {
               const state = getIssueState(num);
               return (
                 <a 

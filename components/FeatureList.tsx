@@ -9,8 +9,8 @@ interface FeatureListProps {
   issues?: GithubIssue[];
 }
 
-const FeatureList: React.FC<FeatureListProps> = ({ features, repoPath, issues = [] }) => {
-  if (features.length === 0) {
+const FeatureList: React.FC<FeatureListProps> = ({ features = [], repoPath, issues = [] }) => {
+  if (!features || features.length === 0) {
     return <p className="text-slate-400 text-center py-10 italic">No clear feature requirements found.</p>;
   }
 
@@ -33,7 +33,7 @@ const FeatureList: React.FC<FeatureListProps> = ({ features, repoPath, issues = 
           <p className="text-sm text-slate-600 mb-4 line-clamp-3">{feature.summary}</p>
           <div className="flex flex-wrap gap-2 items-center">
             <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Sources:</span>
-            {feature.sourceIssueNumbers.map(num => {
+            {(feature.sourceIssueNumbers || []).map(num => {
               const state = getIssueState(num);
               return (
                 <a 

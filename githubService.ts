@@ -2,7 +2,7 @@
 import { Octokit } from 'octokit';
 import { GithubIssue, GithubComment } from './types';
 
-export const fetchRepoIssues = async (repoPath: string, token?: string, forceRefresh = false): Promise<GithubIssue[]> => {
+export const fetchRepoIssues = async (repoPath: string, token?: string): Promise<GithubIssue[]> => {
   const octokit = new Octokit({
     auth: token && token.trim() !== '' ? token.trim() : undefined
   });
@@ -13,7 +13,6 @@ export const fetchRepoIssues = async (repoPath: string, token?: string, forceRef
   }
 
   try {
-    // Fetch all issues (includes closed ones by default if state: 'all')
     const issues = await octokit.paginate(octokit.rest.issues.listForRepo, {
       owner,
       repo,
@@ -23,8 +22,12 @@ export const fetchRepoIssues = async (repoPath: string, token?: string, forceRef
       per_page: 100,
     });
 
+    if (!Array.isArray(issues)) {
+      return [];
+    }
+
     // Filter out Pull Requests and limit to 50 for analysis efficiency
-    const filteredIssues = issues.filter(issue => !issue.pull_request).slice(0, 50);
+    const filteredIssues = issues.filter(issue => issue && !issue.pull_request).slice(0, 50);
 
     // Fetch comments for the selected issues
     const processedIssues = await Promise.all(
@@ -38,12 +41,15 @@ export const fetchRepoIssues = async (repoPath: string, token?: string, forceRef
               issue_number: issue.number,
               per_page: 50
             });
-            commentsData = (commentsResponse.data as any[]).map(c => ({
-              id: c.id,
-              body: c.body || '',
-              user: { login: c.user?.login || 'unknown' },
-              created_at: c.created_at
-            }));
+            
+            if (commentsResponse && Array.isArray(commentsResponse.data)) {
+              commentsData = commentsResponse.data.map((c: any) => ({
+                id: c.id,
+                body: c.body || '',
+                user: { login: c.user?.login || 'unknown' },
+                created_at: c.created_at
+              }));
+            }
           } catch (e) {
             console.error(`无法获取 Issue #${issue.number} 的评论`, e);
           }
@@ -52,12 +58,12 @@ export const fetchRepoIssues = async (repoPath: string, token?: string, forceRef
         return {
           id: issue.id,
           number: issue.number,
-          title: issue.title,
+          title: issue.title || 'Untitled',
           body: issue.body || '',
-          html_url: issue.html_url,
-          labels: (issue.labels || []).map((l: any) => ({ name: typeof l === 'string' ? l : l.name })),
-          state: issue.state,
-          created_at: issue.created_at,
+          html_url: issue.html_url || '',
+          labels: Array.isArray(issue.labels) ? issue.labels.map((l: any) => ({ name: typeof l === 'string' ? l : l.name })) : [],
+          state: issue.state || 'open',
+          created_at: issue.created_at || '',
           user: { login: issue.user?.login || 'unknown' },
           comments_data: commentsData
         } as GithubIssue;

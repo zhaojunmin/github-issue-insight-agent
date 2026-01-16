@@ -51,6 +51,7 @@ export enum AnalysisState {
   IDLE = 'IDLE',
   FETCHING = 'FETCHING',
   ANALYZING = 'ANALYZING',
+  MERGING = 'MERGING',
   COMPLETED = 'COMPLETED',
   ERROR = 'ERROR'
 }
