@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Search, Github, LayoutDashboard, Lightbulb, Gavel, 
@@ -14,6 +15,8 @@ import { AnalysisState, AnalysisResult, GithubIssue, ModelType, FeatureRequireme
 import FeatureList from './components/FeatureList';
 import DecisionList from './components/DecisionList';
 import SummaryStats from './components/SummaryStats';
+
+const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<'online' | 'local'>('online');
@@ -89,6 +92,28 @@ const App: React.FC = () => {
     }
   };
 
+  const callWithRetry = async (fn: () => Promise<any>, maxRetries = 3) => {
+    let lastError;
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return await fn();
+      } catch (err: any) {
+        lastError = err;
+        const errStr = JSON.stringify(err);
+        const isRateLimit = errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED') || err.status === 429;
+        
+        if (isRateLimit && i < maxRetries - 1) {
+          // Exponential backoff: 3s, 7s, 15s... plus a bit of jitter
+          const waitTime = Math.pow(2, i + 1) * 3000 + Math.random() * 1000;
+          await delay(waitTime);
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastError;
+  };
+
   const startAnalysis = async (issues: GithubIssue[]) => {
     setAllIssues(issues);
     setStatus(AnalysisState.ANALYZING);
@@ -105,19 +130,24 @@ const App: React.FC = () => {
         }
       });
 
-      const CONCURRENCY_LIMIT = 10;
+      // Reduced concurrency to avoid hitting rate limits too fast (especially for free tier)
+      const CONCURRENCY_LIMIT = 3;
       let finishedCount = 0;
       const iterator = issues.entries();
 
       const worker = async () => {
         for (const [_, issue] of iterator) {
           try {
-            let partial;
-            if (selectedModel === ModelType.GEMINI) {
-              partial = await analyzeSingleIssueWithGemini(issue);
-            } else {
-              partial = await analyzeSingleIssueWithGLM(issue, glmKey);
-            }
+            // Add a small initial delay between starting tasks to stagger requests
+            await delay(Math.random() * 500);
+
+            let partial = await callWithRetry(async () => {
+              if (selectedModel === ModelType.GEMINI) {
+                return await analyzeSingleIssueWithGemini(issue);
+              } else {
+                return await analyzeSingleIssueWithGLM(issue, glmKey);
+              }
+            });
 
             if (partial?.features && Array.isArray(partial.features)) {
               rawFeatures.push(...partial.features);
@@ -150,7 +180,9 @@ const App: React.FC = () => {
       setRawResult(rawRes);
 
       setStatus(AnalysisState.MERGING);
-      const merged = await performSemanticMerge(rawFeatures, rawDecisions, selectedModel, glmKey);
+      const merged = await callWithRetry(async () => {
+        return await performSemanticMerge(rawFeatures, rawDecisions, selectedModel, glmKey);
+      });
       
       setMergedResult({
         features: (merged && Array.isArray(merged.features)) ? merged.features : [],
@@ -165,6 +197,7 @@ const App: React.FC = () => {
       setStatus(AnalysisState.COMPLETED);
       setViewMode('merged');
     } catch (err: any) {
+      console.error("Critical analysis error:", err);
       setError(err.message || '分析或聚合过程中发生错误。');
       setStatus(AnalysisState.ERROR);
     }
@@ -343,14 +376,14 @@ const App: React.FC = () => {
                 <Loader2 className="animate-spin text-indigo-600" size={24} />
               </div>
             </div>
-            <h3 className="text-xl font-bold text-slate-800">
-              {status === AnalysisState.MERGING ? '正在进行跨 Issue 的语义深度聚合...' : '正在利用并发能力逐个解析 Issue...'}
+            <h3 className="text-xl font-bold text-slate-800 text-center px-4">
+              {status === AnalysisState.MERGING ? '正在进行跨 Issue 的语义深度聚合...' : '正在利用高并发与指数退避重试解析 Issue...'}
             </h3>
             {status === AnalysisState.ANALYZING && (
               <div className="mt-6 w-full max-w-xs">
                 <div className="flex justify-between text-[10px] font-bold text-slate-500 mb-1 uppercase tracking-wider">
                   <span>进度: {analysisProgress.current} / {analysisProgress.total}</span>
-                  <span className="text-indigo-600">并发提取中</span>
+                  <span className="text-indigo-600">智能频率控制中</span>
                 </div>
                 <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden shadow-inner">
                   <div className="bg-gradient-to-r from-indigo-500 to-violet-500 h-full transition-all duration-500" style={{ width: `${progressPercent}%` }} />
@@ -358,15 +391,21 @@ const App: React.FC = () => {
               </div>
             )}
             {status === AnalysisState.MERGING && (
-              <p className="text-slate-400 mt-3 text-sm italic">正在消除重复项并合并相似的功能需求与技术决策...</p>
+              <p className="text-slate-400 mt-3 text-sm italic text-center px-6">正在消除重复项并合并相似的功能需求与技术决策，请耐心等待最后一步...</p>
             )}
           </div>
         )}
 
         {error && (
-          <div className="max-w-2xl mx-auto p-4 mb-6 bg-red-50 text-red-700 border border-red-200 rounded-2xl flex items-center gap-3 text-sm animate-in fade-in slide-in-from-top-4">
-            <AlertCircle size={20} className="shrink-0" />
-            <span>{error}</span>
+          <div className="max-w-2xl mx-auto p-4 mb-6 bg-red-50 text-red-700 border border-red-200 rounded-2xl flex items-start gap-3 text-sm animate-in fade-in slide-in-from-top-4 shadow-sm">
+            <AlertCircle size={20} className="shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-bold mb-1">分析中断</p>
+              <p>{error}</p>
+              {error.includes('RESOURCE_EXHAUSTED') && (
+                <p className="mt-2 text-xs text-red-500 opacity-80">提示：已自动启用指数退避重试，若仍然失败，可能是模型每分钟配额已用尽，请稍后 1-2 分钟再试。</p>
+              )}
+            </div>
           </div>
         )}
 
@@ -433,17 +472,17 @@ const App: React.FC = () => {
               { 
                 icon: <BrainCircuit className="text-indigo-500" />, 
                 title: "高并发提取", 
-                desc: "智能体以 10 路并发形式深度扫描 Issue 及其评论区，哪怕是上千条对话也能快速梳理出核心技术点。" 
+                desc: "智能体采用并发工作模式深度扫描 Issue，内置指数退避重试机制，有效应对 API 频率限制，确保大规模数据解析稳定性。" 
               },
               { 
                 icon: <Sparkles className="text-violet-500" />, 
                 title: "语义聚合去重", 
-                desc: "通过大模型的语义理解能力，自动合并跨 Issue 的重复需求，为您过滤信息噪音，保留最纯净的架构共识。" 
+                desc: "通过大模型语义理解，自动识别跨 Issue 的重复及互补信息，将海量讨论合并为精炼的特性集与架构决策树。" 
               },
               { 
                 icon: <BarChart3 className="text-emerald-500" />, 
                 title: "可视化报告", 
-                desc: "将碎片化的 GitHub 讨论转化为结构化的 Markdown 报告与可视化统计，支持一键导出以便团队决策使用。" 
+                desc: "将碎片化的技术对话转化为结构化的报告与动态统计，并支持追溯原始 Issue 来源，辅助团队进行高效技术决策。" 
               }
             ].map((item, i) => (
               <div key={i} className="p-8 bg-white border border-slate-200 rounded-3xl transition-all duration-300 hover:shadow-xl hover:-translate-y-2 group">
@@ -470,7 +509,7 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="flex items-center gap-6 text-xs font-bold uppercase tracking-widest text-slate-400">
-            <span className="flex items-center gap-1.5"><BrainCircuit size={14}/> Gemini / GLM-4</span>
+            <span className="flex items-center gap-1.5"><BrainCircuit size={14}/> Rate Limit Optimized</span>
             <span className="w-1.5 h-1.5 bg-slate-200 rounded-full hidden sm:block"></span>
             <span className="flex items-center gap-1.5"><Sparkles size={14}/> Semantic Merging Enabled</span>
           </div>
