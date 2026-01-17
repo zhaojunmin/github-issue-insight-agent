@@ -1,6 +1,6 @@
 
 import { Octokit } from 'octokit';
-import { GithubIssue, GithubComment } from './types';
+import { GithubIssue, GithubComment } from './types.ts';
 
 export const fetchRepoIssues = async (repoPath: string, token?: string): Promise<GithubIssue[]> => {
   const octokit = new Octokit({

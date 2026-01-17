@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { FeatureRequirement, DesignDecision, ModelType } from "./types";
+import { FeatureRequirement, DesignDecision, ModelType } from "./types.ts";
 
 export const performSemanticMerge = async (
   features: FeatureRequirement[],
@@ -12,7 +12,6 @@ export const performSemanticMerge = async (
     return { features: [], decisions: [] };
   }
 
-  // To stay within context limits, we only pass the necessary info for merging
   const featureInput = (features || []).map(f => ({
     title: f.title,
     summary: f.summary,
@@ -95,15 +94,25 @@ export const performSemanticMerge = async (
         decisions: Array.isArray(parsed.decisions) ? parsed.decisions : []
       };
     } else {
-      // GLM-4 Implementation
-      const response = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+      let endpoint = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+      let model = "glm-4-flash";
+
+      if (modelType === ModelType.MINIMAX) {
+        endpoint = "https://api.minimax.chat/v1/text/chatcompletion_v2";
+        model = "abab6.5s-chat";
+      } else if (modelType === ModelType.OPENAI) {
+        endpoint = "https://api.openai.com/v1/chat/completions";
+        model = "gpt-4o-mini";
+      }
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: "glm-4-flash",
+          model: model,
           messages: [
             { role: "system", content: "你是一个专门做数据聚合的助手，只输出合法的 JSON 格式。" },
             { role: "user", content: prompt }
@@ -111,10 +120,10 @@ export const performSemanticMerge = async (
           response_format: { type: "json_object" }
         })
       });
-      if (!response.ok) throw new Error("GLM 合并请求失败");
+      if (!response.ok) throw new Error(`${modelType.toUpperCase()} 合并请求失败`);
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content;
-      if (!content) throw new Error("GLM returned empty content during merge.");
+      if (!content) throw new Error(`${modelType.toUpperCase()} returned empty content during merge.`);
       const parsed = JSON.parse(content) || {};
       return {
         features: Array.isArray(parsed.features) ? parsed.features : [],

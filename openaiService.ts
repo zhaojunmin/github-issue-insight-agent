@@ -1,8 +1,8 @@
 
 import { GithubIssue, FeatureRequirement, DesignDecision } from "./types.ts";
 
-export const analyzeSingleIssueWithGLM = async (issue: GithubIssue, apiKey: string): Promise<{ features: FeatureRequirement[], decisions: DesignDecision[] }> => {
-  if (!apiKey) throw new Error("请先在设置中配置 GLM API Key");
+export const analyzeSingleIssueWithOpenAI = async (issue: GithubIssue, apiKey: string): Promise<{ features: FeatureRequirement[], decisions: DesignDecision[] }> => {
+  if (!apiKey) throw new Error("请先在设置中配置 OpenAI API Key");
 
   try {
     const issueData = {
@@ -38,14 +38,14 @@ export const analyzeSingleIssueWithGLM = async (issue: GithubIssue, apiKey: stri
       如果没有发现，请返回空数组。
     `;
 
-    const response = await fetch("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: "glm-4-flash",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: "你是一个专门分析软件工程数据的助手，只返回 JSON 格式。" },
           { role: "user", content: prompt }
@@ -56,20 +56,20 @@ export const analyzeSingleIssueWithGLM = async (issue: GithubIssue, apiKey: stri
 
     if (!response.ok) {
       const errorData = await response.json();
-      throw new Error(errorData.error?.message || `GLM API 调用失败: ${response.statusText}`);
+      throw new Error(errorData.error?.message || `OpenAI API 调用失败: ${response.statusText}`);
     }
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
     
     if (!content) {
-      console.warn(`Issue #${issue.number}: GLM returned no content in choices.`);
+      console.warn(`Issue #${issue.number}: OpenAI returned no content in choices.`);
       return { features: [], decisions: [] };
     }
     
     return JSON.parse(content);
   } catch (e) {
-    console.error(`Error in analyzeSingleIssueWithGLM for #${issue.number}:`, e);
+    console.error(`Error in analyzeSingleIssueWithOpenAI for #${issue.number}:`, e);
     return { features: [], decisions: [] };
   }
 };

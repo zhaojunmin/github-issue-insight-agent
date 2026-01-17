@@ -1,5 +1,5 @@
 
-import { GithubIssue, GithubComment } from './types';
+import { GithubIssue, GithubComment } from './types.ts';
 
 export const parseLocalIssueFiles = async (files: FileList): Promise<GithubIssue[]> => {
   const issues: GithubIssue[] = [];

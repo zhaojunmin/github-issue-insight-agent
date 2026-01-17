@@ -58,5 +58,7 @@ export enum AnalysisState {
 
 export enum ModelType {
   GEMINI = 'gemini',
-  GLM = 'glm'
+  GLM = 'glm',
+  MINIMAX = 'minimax',
+  OPENAI = 'openai'
 }
